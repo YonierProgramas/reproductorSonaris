@@ -1,0 +1,43 @@
+import { test, expect } from '@playwright/test';
+function wav(name: string, tagged = false) {
+  const rate = 8000, samples = rate * 18, data = Buffer.alloc(samples * 2);
+  for (let i = 0; i < samples; i++) data.writeInt16LE(Math.round(Math.sin(i / rate * Math.PI * 2 * 440) * 3000), i * 2);
+  const header = Buffer.alloc(36); header.write('RIFF'); header.write('WAVE', 8); header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22); header.writeUInt32LE(rate, 24); header.writeUInt32LE(rate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  const chunks: Buffer[] = [];
+  if (tagged) { const entries = Object.entries({ IART: 'Artista local', IPRD: 'Álbum personal', IGNR: 'Jazz' }).map(([id, value]) => { const bytes = Buffer.from(value + '\0'); const entry = Buffer.alloc(8 + bytes.length + bytes.length % 2); entry.write(id); entry.writeUInt32LE(bytes.length, 4); bytes.copy(entry, 8); return entry; }); const info = Buffer.concat([Buffer.from('INFO'), ...entries]); const list = Buffer.alloc(8); list.write('LIST'); list.writeUInt32LE(info.length, 4); chunks.push(list, info); }
+  const dataHeader = Buffer.alloc(8); dataHeader.write('data'); dataHeader.writeUInt32LE(data.length, 4); chunks.push(dataHeader, data); const buffer = Buffer.concat([header, ...chunks]); buffer.writeUInt32LE(buffer.length - 8, 4); return { name, mimeType: 'audio/wav', buffer };
+}
+async function importFiles(page: import('@playwright/test').Page, count = 6) {
+  await page.getByRole('button', { name: 'Seleccionar archivos', exact: true }).click();
+  await page.locator('#audio-files').setInputFiles(Array.from({ length: count }, (_, index) => wav(`Cancion ${index}.wav`, index === 0)));
+  await expect(page.locator('.track-row')).toHaveCount(count);
+}
+test('local radio has independent linked nodes, deterministic regeneration and reversible saved playlist', async ({ page }) => {
+  const errors: string[] = [], remote: string[] = []; page.on('pageerror', error => errors.push(error.message)); page.on('request', request => { if (!request.url().startsWith('http://127.0.0.1') && !request.url().startsWith('blob:')) remote.push(request.url()); });
+  await page.goto('/'); await importFiles(page); await expect(page.locator('.track-row').first().locator('small')).toContainText('Artista local');
+  await page.locator('#radio-continuous').uncheck(); await page.locator('#radio-count').fill('3'); await page.locator('#radio-seed').fill('42');
+  await page.getByRole('button', { name: 'Crear radio de Cancion 0', exact: true }).click(); await expect(page.locator('#playlist-title')).toHaveText('Radio de Sonaris'); await expect(page.locator('.track-row')).toHaveCount(4); await expect(page.locator('#playback-status')).toHaveText('Reproduciendo');
+  const order = await page.locator('.track-title strong').allTextContents(); const nodes = await page.locator('.track-row').evaluateAll(rows => rows.map(row => (row as HTMLElement).dataset.songId)); expect(new Set(nodes).size).toBe(4); expect(order[0]).toBe('Cancion 0');
+  await page.getByRole('button', { name: 'Generar nueva selección', exact: true }).click(); await expect(page.locator('.track-title strong')).toHaveText(order);
+  await page.getByRole('button', { name: 'Escuchar radio', exact: true }).click(); await page.getByRole('button', { name: 'Canción siguiente', exact: true }).click(); await expect(page.locator('#now-title')).toHaveText(order[1]); await page.getByRole('button', { name: 'Canción anterior', exact: true }).click(); await expect(page.locator('#now-title')).toHaveText(order[0]);
+  await page.getByRole('button', { name: 'Visualizador de lista doble', exact: true }).click(); await expect(page.locator('.node')).toHaveCount(4); await expect(page.locator('.current-node')).toContainText('Cancion 0');
+  await page.locator('#radio-name').fill('Mi mezcla guardada'); await page.getByRole('button', { name: 'Guardar como playlist', exact: true }).click(); await expect(page.locator('#playlist-title')).toHaveText('Mi mezcla guardada'); const savedNodes = await page.locator('.track-row').evaluateAll(rows => rows.map(row => (row as HTMLElement).dataset.songId)); expect(savedNodes.some(id => nodes.includes(id))).toBe(false);
+  await page.getByRole('button', { name: 'Finalizar radio', exact: true }).click(); await expect(page.locator('#playlist-title')).toHaveText('Mi mezcla guardada'); await expect(page.locator('#radio-session')).toBeHidden();
+  await page.getByRole('button', { name: 'Deshacer', exact: true }).click(); await expect(page.locator('#playlist-title')).toHaveText('Favoritas'); await expect(page.locator('.track-row')).toHaveCount(6); await page.getByRole('button', { name: 'Rehacer', exact: true }).click(); await expect(page.locator('.track-title strong')).toHaveText(order);
+  await page.locator('#library-search').fill('Artista local'); await expect(page.locator('.local-song-card')).toHaveCount(1); await expect(page.locator('#library-result-count')).toHaveText('1 archivos únicos'); await page.locator('#library-search').fill('sin coincidencias'); await expect(page.locator('#local-library-results')).toContainText('No encontramos archivos');
+  await page.screenshot({ path: 'test-results/local-radio-desktop.png', fullPage: true }); expect(errors).toEqual([]); expect(remote).toEqual([]);
+});
+test('automatic radio, continuous exhaustion and mobile library pagination work without external requests', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/'); await importFiles(page, 10); await expect(page.locator('.local-song-card')).toHaveCount(8); await page.getByRole('button', { name: 'Página siguiente', exact: true }).click(); await expect(page.locator('.local-song-card')).toHaveCount(2); await page.getByRole('button', { name: 'Página anterior', exact: true }).click(); await page.locator('#radio-automatic').check(); await page.locator('#radio-count').fill('1');
+  await page.getByRole('button', { name: 'Escuchar Cancion 0 desde la biblioteca', exact: true }).click(); await expect(page.locator('#playlist-title')).toHaveText('Radio de Sonaris');
+  for (let i = 0; i < 9; i++) await page.getByRole('button', { name: 'Canción siguiente', exact: true }).click();
+  await expect(page.locator('.track-row')).toHaveCount(10); expect(new Set(await page.locator('.track-title strong').allTextContents()).size).toBe(10); await expect(page.locator('#next')).toBeDisabled(); await expect(page.locator('#radio-status')).toContainText('No encontramos más');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); await page.screenshot({ path: 'test-results/local-radio-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: 'Finalizar radio', exact: true }).click(); await expect(page.locator('#playlist-title')).toHaveText('Favoritas');
+});
+test('saved local radio and metadata survive production offline reload and remain playable', async ({ page, context }) => {
+  test.skip(process.env.SONARIS_PRODUCTION_TEST !== '1', 'Offline requires production shell'); await page.goto('/'); await importFiles(page, 3); await expect(page.locator('.track-row').first().locator('small')).toHaveText('Artista local');
+  await page.getByRole('button', { name: 'Crear radio de Cancion 0', exact: true }).click(); await page.locator('#radio-name').fill('Radio sin conexión'); await page.getByRole('button', { name: 'Guardar como playlist', exact: true }).click(); await page.getByRole('button', { name: 'Finalizar radio', exact: true }).click();
+  await page.getByRole('tab', { name: 'Sin conexión', exact: true }).click(); await page.getByRole('button', { name: 'Conservar canciones de esta playlist', exact: true }).click(); await expect(page.locator('#offline-status')).toContainText('Canciones conservadas'); await page.getByRole('button', { name: 'Preparar modo sin conexión', exact: true }).click(); await expect(page.locator('#cache-status')).toContainText('Recursos preparados'); await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+  await context.setOffline(true); await page.reload(); await expect(page.locator('#playlist-title')).toHaveText('Radio sin conexión'); await expect(page.locator('.track-row')).toHaveCount(3); await expect(page.locator('.track-row').first().locator('small')).toHaveText('Artista local'); await page.getByRole('button', { name: 'Reproducir Cancion 0', exact: true }).click(); await expect(page.locator('#playback-status')).toHaveText('Reproduciendo'); await expect(page.locator('#duration')).toHaveText('00:18'); await expect(page.locator('#library-result-count')).toHaveText('3 archivos únicos');
+});
