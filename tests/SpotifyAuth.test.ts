@@ -17,6 +17,26 @@ async function authorize(auth: SpotifyAuthService): Promise<void> {
   await auth.connect(); const record = JSON.parse(sessionStorage.getItem('sonaris.spotify.pkce')!); await auth.handleCallback(new URL(`${config.redirectUri}?code=mock-code&state=${record.state}`));
 }
 describe('Official PKCE flow with mocked responses', () => {
+  it('uses the exact production redirect for authorization and code exchange', async () => {
+    const redirectUri = 'https://reproductor-sonoris.vercel.app/callback';
+    const navigate = vi.fn(), replaceUrl = vi.fn();
+    const request = vi.fn<typeof fetch>(async url => String(url).includes('/api/token') ? Response.json(tokens()) : Response.json({ id: 'allowed-user' }));
+    const auth = new SpotifyAuthService({ ...config, redirectUri }, { request, storage: sessionStorage, crypto: webcrypto as unknown as Crypto, navigate, replaceUrl, origin: new URL(redirectUri).origin });
+    services.push(auth);
+    await auth.connect();
+    const authorization = new URL(navigate.mock.calls[0][0]);
+    expect(authorization.searchParams.get('redirect_uri')).toBe(redirectUri);
+    const code = 'production+code/with=characters';
+    const callback = new URL(redirectUri);
+    callback.search = new URLSearchParams({ code, state: authorization.searchParams.get('state')! }).toString();
+    expect(await auth.handleCallback(callback)).toBe(true);
+    expect(auth.connected).toBe(true);
+    expect(replaceUrl).toHaveBeenCalledWith('/');
+    const exchange = new URLSearchParams(request.mock.calls[0][1]!.body as URLSearchParams);
+    expect(exchange.get('code')).toBe(code);
+    expect(exchange.get('redirect_uri')).toBe(redirectUri);
+    expect(sessionStorage.getItem('sonaris.spotify.pkce')).toBeNull();
+  });
   it('generates secure verifier, SHA-256 challenge and independent state', async () => {
     const pkce = await createPkce(webcrypto as unknown as Crypto), another = await createPkce(webcrypto as unknown as Crypto); expect(pkce.verifier).toMatch(/^[\w-]{43,128}$/); expect(pkce.state).toMatch(/^[\w-]{43}$/); expect(pkce.verifier).not.toBe(another.verifier);
     expect(pkce.challenge).toBe(Buffer.from(await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(pkce.verifier))).toString('base64url'));

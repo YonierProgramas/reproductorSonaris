@@ -105,6 +105,16 @@ Sonaris no requiere servidor, APIs musicales, variables de entorno ni autenticac
 
 ## Spotify opcional y callback en producción
 
+### Vercel: reproductor-sonoris.vercel.app
+
+El `vercel.json` de la raíz de Sonaris configura Vite, `npm run build`, salida `dist` y un rewrite interno de `/callback` a `/index.html`. Conserva la URL y sus parámetros `code` y `state` para que el cliente procese OAuth. Solo coincide con `/callback`: `/assets/*`, `/service-worker.js`, `/manifest.webmanifest` e `/icon.svg` conservan su resolución estática, incluidos los 404 de recursos inexistentes. No requiere cambiar `base: './'` de Vite.
+
+En Vercel, la Root Directory debe ser la carpeta que contiene este `vercel.json` y `package.json` (`sonaris` si importas el directorio padre). En el entorno **Production**, configura `VITE_SPOTIFY_REDIRECT_URI=https://reproductor-sonoris.vercel.app/callback`. En Spotify Dashboard → Settings → Redirect URIs registra exactamente `https://reproductor-sonoris.vercel.app/callback`, sin barra final, query ni fragmento. Conserva el Client ID existente. Las variables VITE se incorporan al compilar: vuelve a desplegar después de modificar esta variable o incorporar el rewrite.
+
+Tras desplegar, abre `/callback?code=invalid&state=invalid`: debe cargar Sonaris, limpiar la URL y rechazar la autorización, sin un 404 de Vercel. Después inicia una autorización desde la portada en la misma pestaña y verifica el retorno real. Comprueba que los recursos PWA mantienen su tipo de contenido y que Mi música reproduce un archivo local. Las pruebas con respuestas simuladas no verifican la URI guardada en el Dashboard ni la reproducción real de una cuenta Spotify.
+
+[Documentación oficial de rewrites de Vercel](https://vercel.com/docs/routing/rewrites).
+
 No se hizo ningún despliegue. Antes de publicar, configura `VITE_SPOTIFY_CLIENT_ID` con el identificador público de tu app y `VITE_SPOTIFY_REDIRECT_URI=https://tu-dominio/callback`; registra exactamente esa URL en el Dashboard y vuelve a compilar. No uses Client Secret ni tokens en variables VITE. El origen desde el que abres Sonaris debe coincidir con el origen del redirect.
 
 El hosting debe servir la aplicación también al abrir `/callback` directamente. Vite dev/preview tiene fallback SPA; el hosting estático debe configurarlo. Para alojamiento en raíz, un archivo `_redirects` con `/callback /index.html 200` es una opción en plataformas que soportan esa sintaxis; en otras usa su regla equivalente de rewrite, no una redirección que pierda code/state. GitHub Pages no ofrece ese rewrite SPA de forma nativa: elige un hosting con fallback o prepara y comprueba una página callback real que cargue la misma app. No se declara ese flujo verificado en Pages.
